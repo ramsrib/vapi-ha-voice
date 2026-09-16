@@ -1,0 +1,18 @@
+{
+  "type": "micro",
+  "wake_word": "Hey Vapi",
+  "author": "ramsrib",
+  "website": "https://github.com/ramsrib/vapi-ha-voice",
+  "model": "hey_vapi.tflite",
+  "trained_languages": [
+    "en"
+  ],
+  "version": 2,
+  "micro": {
+    "probability_cutoff": 0.85,
+    "feature_step_size": 10,
+    "sliding_window_size": 5,
+    "tensor_arena_size": 30000,
+    "minimum_esphome_version": "2024.7.0"
+  }
+}

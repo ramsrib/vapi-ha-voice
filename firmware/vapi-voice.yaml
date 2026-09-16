@@ -1,0 +1,521 @@
+# Vapi voice assistant for the Home Assistant Voice: Preview Edition.
+#
+# "Hey Vapi" wakes the device, it opens a Vapi call over the vapi.websocket
+# transport, and talks. No Home Assistant and no laptop are in the path.
+#
+# What this keeps from the stock firmware: the XMOS XU316 audio pipeline
+# (hardware AEC, beamforming, noise suppression, AGC), the AIC3204 codec and
+# amplifier, the on-device wake word, the 12-LED ring, the dial and the mute
+# switch. What it drops: Home Assistant's own voice pipeline, timers, and the
+# media player — see ../VAPI.md.
+#
+# The LED palette is the one already used on the SenseCAP Watcher, so the two
+# devices match: ../../sensecap-watcher/DESIGN-palette.md
+
+substitutions:
+  name: vapi-voice
+  friendly_name: Vapi Voice
+
+  # --- Vapi mint, from DESIGN-palette.md -------------------------------------
+  # #88F1B8 primary, #BEF7D8 lift, #518B6D dim, #FF6B6B error.
+  mint_r: "53.3%"
+  mint_g: "94.5%"
+  mint_b: "72.2%"
+  lift_r: "74.5%"
+  lift_g: "96.9%"
+  lift_b: "84.7%"
+  dim_r: "31.8%"
+  dim_g: "54.5%"
+  dim_b: "42.7%"
+  err_r: "100%"
+  err_g: "42%"
+  err_b: "42%"
+
+  # --- Wake word -------------------------------------------------------------
+  # Trained for this project; see docs/wake-word.md for the method and the
+  # measured numbers. 96.0% recall at zero false accepts on the ambient
+  # validation set, shipping at that checkpoint's own measured cutoff (0.94),
+  # which is set in models/hey_vapi.json rather than here.
+  wake_word_model: models/hey_vapi.json
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  min_version: 2024.12.0
+  on_boot:
+    priority: 375
+    then:
+      # The amplifier is left off through boot so the speaker does not pop.
+      - delay: 1s
+      - switch.turn_on: internal_speaker_amp
+      - script.execute: show_idle
+      # micro_wake_word does not start itself. Without this the wake word never
+      # runs at all, whatever model is loaded. It also owns the microphone: the
+      # Vapi component listens passively, so it has to stay running for the
+      # whole session rather than only between calls.
+      - micro_wake_word.start:
+
+esp32:
+  board: esp32-s3-devkitc-1
+  cpu_frequency: 240MHz
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      # TLS to Vapi plus the audio buffers do not fit comfortably otherwise.
+      CONFIG_MBEDTLS_CERTIFICATE_BUNDLE: "y"
+      CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  # DEBUG so the call lifecycle and Vapi's control-channel messages are visible
+  # during bring-up. The component never logs the API key at any level — it
+  # prints "set" or "MISSING" — so this does not leak the credential.
+  level: DEBUG
+
+wifi:
+  # Two networks rather than one, so the device works at the venue and at home
+  # without a reflash — and, just as importantly, so flashing a venue SSID that
+  # is not in range cannot strand the device off the network and take OTA with
+  # it. Higher priority wins when both are visible.
+  networks:
+    - ssid: !secret wifi1_ssid
+      password: !secret wifi1_password
+      priority: 2
+    - ssid: !secret wifi2_ssid
+      password: !secret wifi2_password
+      priority: 1
+  # Fallback hotspot if neither is reachable, so it is always recoverable
+  # without USB.
+  ap:
+
+captive_portal:
+
+# Keeping the API means the device is still adoptable by Home Assistant for
+# its LED ring, mute switch and dial, even though speech goes to Vapi.
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  # The XMOS driver, from Nabu Casa's own firmware repo.
+  - source:
+      type: git
+      url: https://github.com/esphome/home-assistant-voice-pe
+      ref: dev
+    components: [voice_kit]
+    refresh: 0s
+  - source:
+      type: local
+      path: components
+    components: [vapi_assistant]
+
+i2c:
+  - id: internal_i2c
+    sda: GPIO5
+    scl: GPIO6
+    frequency: 400kHz
+
+# The XMOS XU316. channel 0 is the fully-processed tap (AEC -> IC -> NS -> AGC)
+# and is what Vapi hears; channel 1 stops at noise suppression and feeds the
+# wake-word engine, which applies its own gain.
+voice_kit:
+  id: voice_kit_component
+  i2c_id: internal_i2c
+  reset_pin: GPIO4
+  # AGC, and it has to be. Dropping to NS to keep residual echo quiet was tried
+  # and made the device stop hearing the *user*: without automatic gain, normal
+  # speech from a metre away never reaches a level the transcriber acts on. The
+  # call connects, greets, and then hears nothing.
+  #
+  # So AGC stays and echo is handled by output level instead — see the volume
+  # setting below.
+  channel_0_stage: AGC
+  channel_1_stage: NS
+
+audio_dac:
+  - platform: aic3204
+    id: aic3204_dac
+    i2c_id: internal_i2c
+
+# Both links are `secondary`: the XMOS is the I2S master in both directions.
+i2s_audio:
+  - id: i2s_output
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO8
+  - id: i2s_input
+    i2s_lrclk_pin: GPIO14
+    i2s_bclk_pin: GPIO13
+
+microphone:
+  - platform: i2s_audio
+    id: i2s_mics
+    i2s_din_pin: GPIO15
+    adc_type: external
+    pdm: false
+    sample_rate: 16000
+    bits_per_sample: 32bit
+    i2s_mode: secondary
+    i2s_audio_id: i2s_input
+    channel: stereo
+
+speaker:
+  - platform: i2s_audio
+    id: i2s_audio_speaker
+    sample_rate: 48000
+    i2s_mode: secondary
+    i2s_dout_pin: GPIO10
+    bits_per_sample: 32bit
+    i2s_audio_id: i2s_output
+    dac_type: external
+    channel: stereo
+    timeout: never
+    # Generous, because the websocket delivers audio in bursts rather than at a
+    # steady 20 ms cadence, and there is 8 MB of PSRAM doing nothing.
+    buffer_duration: 500ms
+    audio_dac: aic3204_dac
+
+  # Vapi sends 16 kHz; the hardware runs at 48 kHz. ESPHome does the 1:3
+  # conversion here so the component never touches sample rates.
+  - platform: resampler
+    id: vapi_speaker
+    output_speaker: i2s_audio_speaker
+    sample_rate: 48000
+    bits_per_sample: 16
+    buffer_duration: 500ms
+    task_stack_in_psram: true
+
+power_supply:
+  - id: led_power
+    pin: GPIO45
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: leds_internal
+    internal: true
+    pin: GPIO21
+    chipset: WS2812
+    num_leds: 12
+    rgb_order: GRB
+    rmt_symbols: 192
+    max_refresh_rate: 15ms
+    default_transition_length: 0ms
+    power_supply: led_power
+
+  # The ring is wired starting part-way round, so it is remapped to read as a
+  # continuous circle.
+  - platform: partition
+    id: ring
+    internal: true
+    default_transition_length: 0ms
+    segments:
+      - id: leds_internal
+        from: 7
+        to: 11
+      - id: leds_internal
+        from: 0
+        to: 6
+
+select:
+  # Audition voices without reflashing: pick one, then place a call. Takes
+  # effect on the next call, since the voice is fixed at call creation.
+  #
+  # Two traps behind this list:
+  #   1. Vapi accepts ANY voiceId when the call is created, so a wrong one is
+  #      only discovered on connect, as "pipeline-error-eleven-labs-voice-not-
+  #      found" — which looks like the LED flashing and nothing happening.
+  #   2. The 11labs provider accepts its own *preset names* (matilda, paula,
+  #      andrea...) OR a raw 20-character ElevenLabs voice ID — but not
+  #      ElevenLabs voice *names*. "lily" fails; Lily's real ID works.
+  #
+  # Every option was verified by listening for the assistant to finish an
+  # utterance: bridge/check_voices.py
+  - platform: template
+    name: "Vapi voice"
+    id: vapi_voice
+    optimistic: true
+    restore_value: true
+    initial_option: "Freya - energetic"
+    options:
+      - "Gigi - animated"        # closest premade to an anime voice
+      - "Freya - energetic"
+      - "Lily - warm British"
+      - "Charlotte - soft"
+      - "Matilda - 11labs preset"
+      - "Kylie - vapi, lively"
+      - "Savannah - vapi, warm"
+      - "Hana - vapi, soft"
+      - "Elliot - vapi, male"
+    on_value:
+      - lambda: |-
+          // name -> provider, voiceId. Raw ElevenLabs IDs are used where the
+          // voice is not one of Vapi's presets.
+          struct Entry { const char *label; const char *provider; const char *voice; };
+          static const Entry TABLE[] = {
+            {"Gigi - animated",       "11labs", "jBpfuIE2acCO8z3wKNLl"},
+            {"Freya - energetic",     "11labs", "jsCqWAovK2LkecY7zXl4"},
+            {"Lily - warm British",   "11labs", "pFZP5JQG7iQjIQuC4Bku"},
+            {"Charlotte - soft",      "11labs", "XB0fDUnXU5powFXDhCwa"},
+            {"Matilda - 11labs preset", "11labs", "matilda"},
+            {"Kylie - vapi, lively",  "vapi",   "Kylie"},
+            {"Savannah - vapi, warm", "vapi",   "Savannah"},
+            {"Hana - vapi, soft",     "vapi",   "Hana"},
+            {"Elliot - vapi, male",   "vapi",   "Elliot"},
+          };
+          for (const auto &e : TABLE) {
+            if (x == e.label) {
+              id(vapi).set_voice_provider(e.provider);
+              id(vapi).set_voice_id(e.voice);
+              ESP_LOGI("vapi_assistant", "voice -> %s (%s:%s)", e.label, e.provider, e.voice);
+              break;
+            }
+          }
+
+number:
+  # Live volume, so clipping can be tuned out without a reflash. The dial moves
+  # this too, so the physical control and the remote one agree.
+  - platform: template
+    name: "Vapi volume"
+    id: vapi_volume
+    optimistic: true
+    restore_value: true
+    initial_value: 0.6
+    min_value: 0.05
+    max_value: 1.0
+    step: 0.05
+    on_value:
+      - lambda: id(vapi_speaker).set_volume(x);
+
+button:
+  # Exposed over the API so a call can be placed without being in the room.
+  - platform: template
+    name: "Start Vapi call"
+    on_press:
+      - vapi_assistant.start
+  - platform: template
+    name: "Hang up"
+    on_press:
+      - vapi_assistant.stop
+
+switch:
+  - platform: gpio
+    id: internal_speaker_amp
+    pin: GPIO47
+    restore_mode: ALWAYS_OFF
+
+binary_sensor:
+  - platform: gpio
+    id: center_button
+    pin:
+      number: GPIO0
+      inverted: true
+    on_click:
+      # Press to talk, press again to hang up — useful when a wake word is
+      # inconvenient, and the only control that works while Vapi is speaking.
+      - if:
+          condition: vapi_assistant.is_active
+          then:
+            - vapi_assistant.stop
+          else:
+            - vapi_assistant.start
+
+  - platform: gpio
+    id: hardware_mute_switch
+    pin: GPIO3
+    on_press:
+      - vapi_assistant.stop
+      - script.execute: show_muted
+    on_release:
+      - script.execute: show_idle
+
+sensor:
+  - platform: rotary_encoder
+    id: dial
+    pin_a: GPIO16
+    pin_b: GPIO18
+    resolution: 2
+    on_clockwise:
+      - number.increment:
+          id: vapi_volume
+          cycle: false
+    on_anticlockwise:
+      - number.decrement:
+          id: vapi_volume
+          cycle: false
+
+script:
+  - id: show_idle
+    then:
+      - light.turn_on:
+          id: ring
+          red: ${dim_r}
+          green: ${dim_g}
+          blue: ${dim_b}
+          brightness: 25%
+  - id: show_listening
+    then:
+      - light.turn_on:
+          id: ring
+          red: ${mint_r}
+          green: ${mint_g}
+          blue: ${mint_b}
+          brightness: 100%
+  - id: show_error
+    then:
+      - light.turn_on:
+          id: ring
+          red: ${err_r}
+          green: ${err_g}
+          blue: ${err_b}
+          brightness: 80%
+  - id: show_muted
+    then:
+      - light.turn_off: ring
+
+micro_wake_word:
+  id: mww
+  microphone:
+    microphone: i2s_mics
+    channels: 1
+    gain_factor: 4
+  models:
+    - model: ${wake_word_model}
+  # Defaults to true, which makes the engine stop itself on detection. Here that
+  # also stops the *shared* microphone, so the assistant greets you and then
+  # hears nothing. It must keep running: the Vapi component listens to the same
+  # microphone passively and cannot start it.
+  stop_after_detection: false
+  vad:
+  on_wake_word_detected:
+    # Deliberately NOT stopping the wake word during a call. Its microphone
+    # source is non-passive, so stopping it stops the *shared* hardware
+    # microphone — which starves Vapi's feed and ends the call with
+    # "silence-timed-out". Leave it running and ignore it instead.
+    - if:
+        condition:
+          and:
+            - binary_sensor.is_off: hardware_mute_switch
+            - not:
+                vapi_assistant.is_active:
+        then:
+          # Not `vapi_assistant.start`: a wake-initiated call uses the short
+          # silence timeout, so one triggered by the television hangs up in
+          # seconds instead of billing for minutes.
+          - vapi_assistant.start_from_wake_word
+
+vapi_assistant:
+  id: vapi
+  microphone:
+    microphone: i2s_mics
+    channels: 0        # the fully-processed XMOS tap (AEC -> IC -> NS -> AGC)
+  speaker: vapi_speaker
+  api_key: !secret vapi_api_key
+  # No assistant_id: the assistant is defined inline on every call. Nothing on
+  # the dashboard is read or written, so this device cannot inherit another
+  # project's system prompt — which is what made it introduce itself as a Ring
+  # doorbell.
+  #
+  # Vapi accepts ANY voiceId string when the call is created — a 201 proves
+  # nothing. The voice is only resolved once the transport connects, and a bad
+  # one ends the call instantly with
+  # "pipeline-error-eleven-labs-voice-not-found", which on the device looks like
+  # the LED flashing and nothing happening.
+  #
+  # Only Vapi's 11labs *preset names* work here, not arbitrary ElevenLabs voice
+  # names. Verified by listening for assistant speech (bridge/check_voices.py):
+  #   work: matilda, sarah, paula, andrea      fails: lily
+  # matilda is already used by the SenseCAP Watcher, so this one is sarah.
+  # Vapi's own voices are noticeably more expressive than the 11labs presets.
+  # The `Vapi voice` select below overrides this at runtime, so this is only
+  # the value used before anything is chosen.
+  voice_provider: "11labs"
+  voice_id: "jsCqWAovK2LkecY7zXl4"   # Freya — see the select below
+  model_provider: anthropic
+  # Haiku 4.5 for latency — this is a conversation, not an essay. The dated id
+  # is required: Vapi rejects the short "claude-haiku-4-5" form with a 400.
+  model: claude-haiku-4-5-20251001
+  first_message: "Hey! I'm listening — what's up?"
+  system_prompt: >-
+    You are a bright, playful voice assistant living in a little device on a
+    desk. You are genuinely curious and you enjoy the person you are talking to.
+
+    Speak with energy. React before you answer — "ooh", "wait, really?", "okay
+    so" — and vary your sentence length so you do not sound like a manual.
+    Contractions always. A bit of teasing is fine. Exclamation marks and
+    question marks are what make you sound alive, so use them where you mean
+    them.
+
+    You are speaking out loud, so keep it short: a sentence or two unless asked
+    for more. No lists, no markdown, no headings, no emoji, and never stage
+    directions like *laughs*. Spell out numbers and units the way they are said.
+
+    If you do not know something, say so cheerfully rather than guessing. If a
+    question is ambiguous, ask one quick clarifying question instead of
+    answering three ways.
+
+    Do not announce that you are an AI, do not describe your own capabilities
+    unprompted, and do not narrate what you are about to do. Just react, then
+    answer.
+
+  # ElevenLabs delivery. This, not the choice of voice, is what makes a premade
+  # voice sound lively or flat: high stability reads every line the same way.
+  # Low stability lets the delivery vary; style exaggerates it. Only applied to
+  # 11labs voices — Vapi's own voices do not take these.
+  voice_model: eleven_turbo_v2_5
+  stability: 0.3
+  style: 0.6
+  similarity_boost: 0.75
+  use_speaker_boost: true
+
+  # Headroom against clipping. Raise with the dial if it is too quiet; if it
+  # distorts, it is too high.
+  volume: 0.6
+  # Vapi's defaults end a call after a short pause, which reads as the call
+  # dropping on its own.
+  silence_timeout: 300s
+  # Sized against two opposing costs. Too long and a call nobody asked for bills
+  # for minutes; too short and a real conversation dies in an ordinary pause —
+  # 20s did exactly that, ending live calls with "silence-timed-out". 60s
+  # tolerates someone thinking or walking away mid-sentence, and still caps a
+  # call nobody asked for at a minute. The button keeps the full timeout, since
+  # a long pause there is deliberate.
+  wake_silence_timeout: 60s
+  max_duration: 1800s
+  # Require real transcribed words before the assistant yields, so residual
+  # echo of its own voice cannot interrupt it.
+  stop_speaking_num_words: 2
+
+  # Saying one of these hangs up, rather than leaving the call running until the
+  # silence timeout — which bills for the silence and leaves the ring lit.
+  end_call_message: "Talk soon!"
+  end_call_phrases:
+    - "goodbye"
+    - "bye bye"
+    - "good bye"
+    - "talk to you later"
+    - "see you later"
+    - "that's all thanks"
+    - "that's all, thank you"
+    - "stop listening"
+    - "never mind"
+    - "hang up"
+  on_start:
+    - script.execute: show_listening
+  on_end:
+    - script.execute: show_idle
+  on_error:
+    - logger.log:
+        format: "vapi error: %s"
+        args: [error.c_str()]
+    - script.execute: show_error
+    - delay: 2s
+    - script.execute: show_idle
