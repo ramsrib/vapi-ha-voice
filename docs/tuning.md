@@ -190,7 +190,9 @@ Captures every 30–40 seconds therefore log repeated *unsuccessful boot attempt
 until safe mode rolls back to the previous image — leaving you reading an old
 firmware's config dump and concluding the upload failed. It had not. Verify over
 the network instead: `esphome logs vapi-voice.yaml --device <host>.local` touches
-no reset lines.
+no reset lines, and it replays the full config dump to each client on connect —
+so you can read back the cutoff, window and model name of whatever is *actually*
+running at any time, without rebooting the device to catch a boot log.
 
 **ESPHome excludes some built-in ESP-IDF components by default.** `json`,
 `esp_http_client` and `esp-tls` are in `DEFAULT_EXCLUDED_IDF_COMPONENTS` — it
