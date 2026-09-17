@@ -103,9 +103,17 @@ Two traps worth knowing before you change the voice:
 **"Hey Vapi"** runs on-device with no cloud round-trip —
 `firmware/models/hey_vapi.{tflite,json}`, 61 KB, a `micro_wake_word` model.
 
+It was trained for this project on synthetic speech plus real recordings of the
+phrase, and on negatives captured through the device's own microphone and DSP
+path. It fires on **82% of real utterances with no false accepts** across 84 real
+negative clips. The first model, trained purely on synthetic speech, validated at
+96% and managed 45% in an actual room — the gap between those two numbers is the
+most useful thing this part of the project measured.
+
 To use a different phrase, point `wake_word_model` at any other model: a stock
 one such as `okay_nabu` or `hey_jarvis`, or your own manifest in
-`firmware/models/`. Sensitivity lives in the manifest rather than the YAML — see
+`firmware/models/`. Sensitivity lives in the manifest rather than the YAML, and
+the previous model is kept alongside for rollback — see
 [docs/tuning.md](docs/tuning.md).
 
 A false trigger places a **billable call**, so a wake-initiated call is capped

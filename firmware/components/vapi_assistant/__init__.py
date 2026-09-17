@@ -7,6 +7,7 @@ component's role without replacing anything else on the device.
 
 import esphome.codegen as cg
 from esphome.components import esp32, microphone, speaker
+from esphome.components.esp32 import include_builtin_idf_component
 import esphome.config_validation as cv
 from esphome import automation
 from esphome.const import CONF_ID, CONF_MICROPHONE, CONF_SPEAKER, CONF_TRIGGER_ID
@@ -181,6 +182,14 @@ async def to_code(config):
     esp32.add_idf_component(
         name="espressif/esp_websocket_client", ref=ESP_WEBSOCKET_CLIENT_VERSION
     )
+
+    # ESPHome excludes these built-in ESP-IDF components by default to save
+    # flash — it uses ArduinoJson rather than cJSON, and only pulls in the HTTP
+    # client for its own http_request component. This component uses both
+    # directly (cJSON to build the call body, esp_http_client to POST it, and
+    # esp-tls for the certificate bundle), so they have to be asked for.
+    for builtin in ("json", "esp_http_client", "esp-tls"):
+        include_builtin_idf_component(builtin)
 
 
 VAPI_ACTION_SCHEMA = automation.maybe_simple_id(

@@ -124,14 +124,32 @@ the echo comes along. Keep it, and turn the speaker down.
 `probability_cutoff` and `sliding_window_size` live in the model manifest
 (`models/hey_vapi.json`), not the YAML, so changing them needs a reflash.
 
-Ship values here are **0.85 / 5**. The first attempt used 0.94 / 8, which is
-stricter than any official model — Nabu Casa's ship at a window of 5 — and it
-showed: the wake word needed several attempts. A larger window demands more
-consecutive detections, so it trades recall for false-accept resistance, and
-stacking a high cutoff on top of a wide window compounds both.
+Ship values are **0.27 / 5**. A cutoff that low looks alarming next to the
+official models' ~0.97, and it is not comparable: it is the threshold at which
+*this* model was measured to produce zero false accepts per hour on held-out
+ambient audio. A cutoff only means something relative to the model's own score
+distribution.
 
-Relax these before reaching for a different model. Past roughly 0.75 the gain
-turns into false wakes rather than reliability.
+The history is worth knowing, because the sensitivity was the bug twice over.
+The first model shipped at 0.94 / 8 — stricter than any official model, since
+Nabu Casa's ship at a window of 5 — and needed several attempts to wake. Relaxing
+it to 0.85 / 5 helped and was still not enough: measured against real recordings
+rather than the synthetic validation set, that model answered **45% of the time**
+while its own validation claimed 96%. A wake word that works slightly less than
+half the time is exactly what "it takes a few tries" feels like.
+
+The current model answers **82%** of real utterances at 0.27, with no false
+accepts across 84 real negative clips recorded through this device. The previous
+model false-accepted on 4 of those 84 at *every* cutoff tried, which is the part
+a synthetic validation set never showed.
+
+If you retrain, take the cutoff from the training run's own measurement rather
+than from any published figure, and check it against recordings of real people
+before shipping. Validation recall on synthetic speech does not predict this.
+
+**Rolling back.** The previous model is kept as
+`models/hey_vapi.v1.{tflite,json}.bak`. Point `wake_word_model` at a restored
+copy of `hey_vapi.v1.json` and reflash.
 
 ## Things worth knowing
 
@@ -150,8 +168,36 @@ seconds `POST /call` takes, so a naive check placed four billable calls in six
 seconds on an earlier project. The component claims the transition with an atomic
 compare-exchange instead.
 
-**The wake-word engine is stopped while a call is up**, because it shares the
-microphone and would otherwise be triggered by the assistant's own voice.
+**The wake-word engine keeps running for the whole call**, and must. It shares
+one hardware microphone with the Vapi client, and a non-passive `MicrophoneSource`
+stops that hardware on `stop()` — so whichever component ends its session kills
+audio for the other. Ownership goes to the wake word, which has to listen
+continuously anyway; the Vapi client's source is `passive=True` and never starts
+or stops the device.
+
+Two settings follow from that, and both defaults are wrong here:
+`stop_after_detection` defaults to `true`, which stops the shared microphone the
+moment the wake word fires — the assistant greets you and then hears nothing
+until the call dies on a silence timeout. And `micro_wake_word` has **no start in
+its own lifecycle**: something must call `micro_wake_word.start:`. The stock
+config does it from `voice_assistant.on_client_connected`, so removing that
+automation silently removes the only start and the wake word never fires at all,
+no matter how good the model is. It is started from `on_boot` here.
+
+**Checking a flash over serial breaks the flash.** Reading the USB-serial-JTAG
+console drives reset, and ESPHome only marks a boot successful after ~60 seconds.
+Captures every 30–40 seconds therefore log repeated *unsuccessful boot attempts*
+until safe mode rolls back to the previous image — leaving you reading an old
+firmware's config dump and concluding the upload failed. It had not. Verify over
+the network instead: `esphome logs vapi-voice.yaml --device <host>.local` touches
+no reset lines.
+
+**ESPHome excludes some built-in ESP-IDF components by default.** `json`,
+`esp_http_client` and `esp-tls` are in `DEFAULT_EXCLUDED_IDF_COMPONENTS` — it
+uses ArduinoJson and pulls the HTTP client in only for its own `http_request`
+component — so a component that includes `cJSON.h` fails to build with a bare
+`No such file or directory`, which reads like a missing dependency rather than a
+deliberate exclusion. `include_builtin_idf_component()` puts them back.
 
 **Echo cancellation is the XMOS's job, not ours.** Do not port the echo-gating
 from the AtomS3R firmware — it exists there because that board has two codecs and

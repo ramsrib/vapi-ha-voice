@@ -32,10 +32,12 @@ substitutions:
   err_b: "42%"
 
   # --- Wake word -------------------------------------------------------------
-  # Trained for this project; see docs/wake-word.md for the method and the
-  # measured numbers. 96.0% recall at zero false accepts on the ambient
-  # validation set, shipping at that checkpoint's own measured cutoff (0.94),
-  # which is set in models/hey_vapi.json rather than here.
+  # Trained for this project (v2), on synthetic speech plus real recordings of
+  # the phrase and real negatives captured through this device's own audio path.
+  # Fires on 82% of real utterances with no false accepts across 84 real
+  # negative clips; v1 managed 45% and false-accepted on 4 of the same 84.
+  # Cutoff (0.27) and window (5) live in models/hey_vapi.json, not here.
+  # models/hey_vapi.v1.* is the previous model, kept for rollback.
   wake_word_model: models/hey_vapi.json
 
 esphome:
