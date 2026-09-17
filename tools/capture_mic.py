@@ -19,14 +19,31 @@ say the phrase, and switch it off. Ctrl-C also closes the file cleanly.
 """
 import argparse
 import datetime
+import errno
+import shutil
 import socket
 import struct
+import subprocess
 import sys
 import wave
 from pathlib import Path
 
 HEADER = b"MICTAP01"
 FRAME_PCM, FRAME_LABEL = 0, 1
+
+
+def port_holder(port):
+    """Describe whatever is already listening on the port, if we can tell."""
+    if shutil.which("lsof") is None:
+        return None
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip().splitlines()
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return out[1:] if len(out) > 1 else None
 
 
 def recv_exactly(sock, n):
@@ -104,13 +121,46 @@ def main():
     ap.add_argument("--port", type=int, default=9000)
     ap.add_argument("--out-dir", type=Path, default=Path("captures"))
     args = ap.parse_args()
+    # Line-buffer, so progress is visible when this is redirected to a log
+    # rather than appearing only once the process exits.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", args.port))
+    try:
+        srv.bind(("0.0.0.0", args.port))
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        # A receiver left running from an earlier session still holds the port,
+        # and the device will happily connect to *it* — so the capture succeeds
+        # and the audio lands in that process's output directory instead of this
+        # one. Nothing looks wrong except a missing file. Fail loudly and name
+        # the culprit rather than letting the session go somewhere else.
+        print(f"!! port {args.port} is already in use.\n", file=sys.stderr)
+        holder = port_holder(args.port)
+        if holder:
+            print("   Already listening:", file=sys.stderr)
+            for line in holder:
+                print(f"     {line}", file=sys.stderr)
+            pids = sorted({parts[1] for l in holder if len(parts := l.split()) > 1})
+            if pids:
+                print(f"\n   That is almost certainly an earlier capture_mic.py.", file=sys.stderr)
+                print(f"   It would have received this session and written the audio", file=sys.stderr)
+                print(f"   into ITS output directory, not {args.out_dir}.\n", file=sys.stderr)
+                print(f"   Stop it:  kill {' '.join(pids)}", file=sys.stderr)
+                print(f"   Or run here on another port:  --port {args.port + 1}", file=sys.stderr)
+        else:
+            print(f"   Stop whatever is listening, or use --port {args.port + 1}.", file=sys.stderr)
+        return 1
+
     srv.listen(1)
     print(f"listening on :{args.port} — turn on the device's 'Mic capture' switch")
+    print(f"writing to {args.out_dir.resolve()}")
     print("(Ctrl-C to quit)\n")
 
     try:
@@ -122,7 +172,8 @@ def main():
             print(">> disconnected, waiting for the next session\n")
     except KeyboardInterrupt:
         print("\nbye")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

@@ -52,6 +52,13 @@ tools/set_switch.py vapi-voice-xxxxxx.local "Mic capture" off
 You get `captures/capture-<stamp>.wav` and, if anything fired, a
 `.labels.txt` in Audacity's label format — import both and the hits are marked.
 
+**Run one receiver at a time.** A stale one left over from an earlier session
+still holds the port, and the device will connect to *it* — the capture succeeds
+and the audio lands in that process's output directory, with nothing at all
+looking wrong except a file that never appears where you expected. The receiver
+now refuses to start in that situation and names the process to kill, rather than
+letting the session go somewhere else.
+
 Worth varying deliberately, because this is the only chance to: distance, angle,
 volume, speed, and as many different voices as you can get. A model trained on
 one person at one distance learns that person at that distance.
