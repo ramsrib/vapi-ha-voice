@@ -16,6 +16,10 @@ substitutions:
   name: vapi-voice
   friendly_name: Vapi Voice
 
+  # Where tools/capture_mic.py is listening. Only used when capture is switched
+  # on, and capture is off unless something turns it on.
+  capture_host: "10.0.0.53"
+
   # --- Vapi mint, from DESIGN-palette.md -------------------------------------
   # #88F1B8 primary, #BEF7D8 lift, #518B6D dim, #FF6B6B error.
   mint_r: "53.3%"
@@ -119,7 +123,7 @@ external_components:
   - source:
       type: local
       path: components
-    components: [vapi_assistant]
+    components: [vapi_assistant, mic_tap]
 
 i2c:
   - id: internal_i2c
@@ -309,6 +313,20 @@ button:
       - vapi_assistant.stop
 
 switch:
+  - platform: template
+    name: "Mic capture"
+    id: mic_capture_switch
+    icon: mdi:record-rec
+    optimistic: true
+    # Never restored. Coming back from a power cut streaming the room to an
+    # address that may now belong to someone else is not a default worth having.
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - mic_tap.start:
+          id: mic_capture
+    turn_off_action:
+      - mic_tap.stop:
+          id: mic_capture
   - platform: gpio
     id: internal_speaker_amp
     pin: GPIO47
@@ -398,6 +416,13 @@ micro_wake_word:
   stop_after_detection: false
   vad:
   on_wake_word_detected:
+    # Stamp the hit into any running capture, so a session comes back
+    # self-labelled: the marks are what fired, and the attempts between them are
+    # the misses. Misses are the whole reason to record — nothing else on the
+    # device leaves any trace of the model failing. No-op when not capturing.
+    - mic_tap.mark:
+        id: mic_capture
+        label: detected
     # Deliberately NOT stopping the wake word during a call. Its microphone
     # source is non-passive, so stopping it stops the *shared* hardware
     # microphone — which starves Vapi's feed and ends the call with
@@ -413,6 +438,21 @@ micro_wake_word:
           # silence timeout, so one triggered by the television hangs up in
           # seconds instead of billing for minutes.
           - vapi_assistant.start_from_wake_word
+
+# Training-data collection. Mirrors micro_wake_word's source exactly — channel 1
+# and gain_factor 4 — because the point is to capture what the model is scored
+# on, not what Vapi hears. Vapi listens to channel 0 (AGC), a different tap.
+#
+# Idle until `mic_tap.start`, which is deliberate: this streams room audio
+# unencrypted over the LAN and does not survive a reboot.
+mic_tap:
+  id: mic_capture
+  microphone:
+    microphone: i2s_mics
+    channels: 1
+    gain_factor: 4
+  host: ${capture_host}
+  port: 9000
 
 vapi_assistant:
   id: vapi

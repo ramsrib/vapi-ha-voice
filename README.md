@@ -110,6 +110,10 @@ negative clips. The first model, trained purely on synthetic speech, validated a
 96% and managed 45% in an actual room — the gap between those two numbers is the
 most useful thing this part of the project measured.
 
+To improve it further, record what the device itself hears — the wake-word
+utterance reaches no call recording, and a failed attempt currently leaves no
+trace at all. See [docs/capture.md](docs/capture.md).
+
 To use a different phrase, point `wake_word_model` at any other model: a stock
 one such as `okay_nabu` or `hey_jarvis`, or your own manifest in
 `firmware/models/`. Sensitivity lives in the manifest rather than the YAML, and
@@ -126,6 +130,7 @@ with a short silence timeout while the button keeps the full one.
 | [docs/hardware.md](docs/hardware.md) | What the hardware is, the XMOS pipeline, pin map, footguns |
 | [docs/design.md](docs/design.md) | The four ways to integrate Vapi, and why this one |
 | [docs/tuning.md](docs/tuning.md) | Voice, delivery, prompt, and the bugs worth not rediscovering |
+| [docs/capture.md](docs/capture.md) | Recording what the wake word actually hears, to train on it |
 
 ## Recovery
 
