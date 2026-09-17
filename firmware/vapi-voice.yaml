@@ -322,6 +322,13 @@ switch:
     # address that may now belong to someone else is not a default worth having.
     restore_mode: ALWAYS_OFF
     turn_on_action:
+      # End any call that is already up before capture begins. Blocking *new*
+      # calls is not enough: one started before the switch went on survives as
+      # long as someone keeps talking, and a capture session is nothing but
+      # talking — so the assistant replies over every attempt and its voice
+      # lands in the recording that is supposed to contain only the room.
+      - vapi_assistant.stop:
+          id: vapi
       - mic_tap.start:
           id: mic_capture
     turn_off_action:
@@ -433,6 +440,14 @@ micro_wake_word:
             - binary_sensor.is_off: hardware_mute_switch
             - not:
                 vapi_assistant.is_active:
+            # Not while collecting training data. A capture session says the
+            # phrase dozens of times on purpose; each one would otherwise place
+            # a billable call, and the assistant's replies would end up in the
+            # recording that is supposed to contain only the room. The detection
+            # is still marked above, so hits are labelled either way.
+            - not:
+                mic_tap.is_streaming:
+                  id: mic_capture
         then:
           # Not `vapi_assistant.start`: a wake-initiated call uses the short
           # silence timeout, so one triggered by the television hangs up in

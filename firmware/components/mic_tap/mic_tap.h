@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include <freertos/FreeRTOS.h>
+
 namespace esphome {
 namespace mic_tap {
 
@@ -45,7 +47,11 @@ class MicTap : public Component {
 
  protected:
   void on_mic_data_(const std::vector<uint8_t> &data);
-  bool send_frame_(uint8_t type, const uint8_t *payload, size_t len);
+  /// Enqueue a complete frame. All-or-nothing: a frame that does not fit is
+  /// dropped whole, so what reaches the socket is always frame-aligned.
+  bool queue_frame_(uint8_t type, const uint8_t *payload, size_t len);
+  void flush_();
+  void close_socket_();
 
   microphone::MicrophoneSource *mic_{nullptr};
   std::string host_;
@@ -55,10 +61,18 @@ class MicTap : public Component {
    * the main loop, so the socket is shared across two contexts. Closing it out
    * from under an in-flight send() would be a use-after-free on a reused fd, so
    * the close is deferred to loop() and only happens once no send is active. */
-  std::atomic<int> sock_{-1};
+  int sock_{-1};  // only touched on the main loop now
   std::atomic<bool> streaming_{false};
-  std::atomic<int> in_send_{0};
-  std::atomic<bool> close_pending_{false};
+
+  /* The socket is written from loop(), never from the audio path. Audio only
+   * ever copies into this ring, so a slow or stalled network costs buffered
+   * seconds instead of microphone data — and cannot kill the stream. Writing
+   * to a socket from the mic task is what made captures die after 30-45
+   * seconds on the first two attempts. */
+  uint8_t *ring_{nullptr};
+  size_t ring_size_{0};
+  size_t head_{0}, tail_{0}, fill_{0};
+  portMUX_TYPE ring_mux_ = portMUX_INITIALIZER_UNLOCKED;
 
   std::atomic<uint32_t> sent_bytes_{0};
   std::atomic<uint32_t> dropped_bytes_{0};
