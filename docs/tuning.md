@@ -143,6 +143,10 @@ accepts across 84 real negative clips recorded through this device. The previous
 model false-accepted on 4 of those 84 at *every* cutoff tried, which is the part
 a synthetic validation set never showed.
 
+In use the difference is obvious rather than marginal, which is the outcome the
+measurements above could only suggest — the real clips were in the new model's
+training data, so its scores are upper bounds.
+
 If you retrain, take the cutoff from the training run's own measurement rather
 than from any published figure, and check it against recordings of real people
 before shipping. Validation recall on synthetic speech does not predict this.
