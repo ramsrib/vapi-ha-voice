@@ -124,36 +124,60 @@ the echo comes along. Keep it, and turn the speaker down.
 `probability_cutoff` and `sliding_window_size` live in the model manifest
 (`models/hey_vapi.json`), not the YAML, so changing them needs a reflash.
 
-Ship values are **0.27 / 5**. A cutoff that low looks alarming next to the
-official models' ~0.97, and it is not comparable: it is the threshold at which
-*this* model was measured to produce zero false accepts per hour on held-out
-ambient audio. A cutoff only means something relative to the model's own score
-distribution.
+Ship values are **0.87 / 5**.
 
-The history is worth knowing, because the sensitivity was the bug twice over.
-The first model shipped at 0.94 / 8 — stricter than any official model, since
-Nabu Casa's ship at a window of 5 — and needed several attempts to wake. Relaxing
-it to 0.85 / 5 helped and was still not enough: measured against real recordings
-rather than the synthetic validation set, that model answered **45% of the time**
-while its own validation claimed 96%. A wake word that works slightly less than
-half the time is exactly what "it takes a few tries" feels like.
+A cutoff is meaningless in isolation — it only has meaning against a particular
+model's score distribution. The three models this project has shipped each
+needed a different one to reach zero false accepts on the same held-out ambient
+audio, and comparing the numbers across models says nothing:
 
-The current model answers **82%** of real utterances at 0.27, with no false
-accepts across 84 real negative clips recorded through this device. The previous
-model false-accepted on 4 of those 84 at *every* cutoff tried, which is the part
-a synthetic validation set never showed.
+| model | cutoff for zero false accepts | recall there |
+|---|---|---|
+| v1 | 0.94 | 45% on real speech |
+| v2 | 0.27 | 27% |
+| **v3** | **0.87** | **88%** |
 
-In use the difference is obvious rather than marginal, which is the outcome the
-measurements above could only suggest — the real clips were in the new model's
-training data, so its scores are upper bounds.
+So do not "relax the cutoff" by copying a figure from another model or from
+Nabu Casa's. Take it from the training run's own measurement.
 
-If you retrain, take the cutoff from the training run's own measurement rather
-than from any published figure, and check it against recordings of real people
-before shipping. Validation recall on synthetic speech does not predict this.
+### Measure against real speech, not validation recall
 
-**Rolling back.** The previous model is kept as
-`models/hey_vapi.v1.{tflite,json}.bak`. Point `wake_word_model` at a restored
-copy of `hey_vapi.v1.json` and reflash.
+Every reliability problem here traced back to trusting a number measured on the
+wrong audio. v1 reported 96% validation recall and answered 45% of the time. v2
+reported 94.3% and answered **16-17%** — measured properly, by recording the
+device's own microphone while the phrase was spoken ~100 times.
+
+The reason is a domain gap with three layers, and the tooling in
+[capture.md](capture.md) exists to close it:
+
+1. **Validation recall is measured on synthetic speech.** It says nothing about
+   a human in a room.
+2. **The wake word listens to a different tap than the call does** — XMOS
+   channel 1, noise-suppressed without AGC, plus its own gain. Audio pulled from
+   call recordings is the wrong signal.
+3. **A miss leaves no trace at all**, so the failure mode is invisible unless
+   you record it deliberately.
+
+v3 was trained on 108 clips captured through that path, 90 of them utterances
+the previous model failed on. Scored on held-out clips neither model had seen,
+v2 fires on 7 of 26 and v3 on 23 of 26.
+
+### The pipeline can cost as much as the model
+
+Worth knowing before blaming a model. Running v2 offline over the exact clips
+the device had just missed — same cutoff, same window, but streaming state reset
+per clip — it fired on 11 of 49 the device ignored. Offline 34%, on-device 17%.
+
+**Roughly half that model's failures were not the model's decision.** The
+candidates are the VAD model, which is enabled here and must also fire for a
+detection to count, and sliding-window state carried across continuous audio.
+Neither has been tested yet.
+
+So measure in both places: the model offline with fresh state, and the pipeline
+on-device. An improvement in one can hide a regression in the other.
+
+**Rolling back.** Previous models are kept as `models/hey_vapi.v1.*.bak` and
+`models/hey_vapi.v2.*.bak`. Copy one over `hey_vapi.tflite`/`.json` and reflash.
 
 ## Things worth knowing
 

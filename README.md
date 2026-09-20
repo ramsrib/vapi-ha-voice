@@ -103,12 +103,16 @@ Two traps worth knowing before you change the voice:
 **"Hey Vapi"** runs on-device with no cloud round-trip —
 `firmware/models/hey_vapi.{tflite,json}`, 61 KB, a `micro_wake_word` model.
 
-It was trained for this project on synthetic speech plus real recordings of the
-phrase, and on negatives captured through the device's own microphone and DSP
-path. It fires on **82% of real utterances with no false accepts** across 84 real
-negative clips. The first model, trained purely on synthetic speech, validated at
-96% and managed 45% in an actual room — the gap between those two numbers is the
-most useful thing this part of the project measured.
+It was trained on synthetic speech plus 108 recordings made through the device's
+own microphone and DSP path — 90 of them utterances an earlier model had failed
+on, which is material that exists nowhere else, since a failed wake word leaves
+no event, no log line and no audio anywhere.
+
+Scored on held-out clips it had never seen, it fires on **23 of 26** where the
+previous model fires on 7. That previous model reported 94% validation recall
+and answered **16%** of the time in the room. The gap between those two numbers
+is the most useful thing this part of the project measured, and
+[docs/capture.md](docs/capture.md) is the tooling built to close it.
 
 To improve it further, record what the device itself hears — the wake-word
 utterance reaches no call recording, and a failed attempt currently leaves no
